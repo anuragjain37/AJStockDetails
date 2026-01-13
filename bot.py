@@ -1,9 +1,9 @@
 import os
-import json
 import requests
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+from flask import Flask, request
 from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
@@ -14,9 +14,7 @@ from ta.trend import MACD
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-OFFSET_FILE = "offset.txt"
-COOLDOWN_FILE = "cooldown.json"
-COOLDOWN_MINUTES = 60
+app = Flask(__name__)
 
 # ========================
 # TELEGRAM HELPERS
@@ -34,37 +32,6 @@ def send_photo(chat_id, path):
             files={"photo": f},
             data={"chat_id": chat_id}
         )
-
-def get_updates(offset=None):
-    params = {"timeout": 30}
-    if offset:
-        params["offset"] = offset
-    return requests.get(f"{API_URL}/getUpdates", params=params).json()
-
-# ========================
-# COOLDOWN LOGIC
-# ========================
-def load_cooldown():
-    if os.path.exists(COOLDOWN_FILE):
-        with open(COOLDOWN_FILE) as f:
-            return json.load(f)
-    return {}
-
-def save_cooldown(data):
-    with open(COOLDOWN_FILE, "w") as f:
-        json.dump(data, f)
-
-def in_cooldown(symbol):
-    cd = load_cooldown()
-    if symbol in cd:
-        last = datetime.fromisoformat(cd[symbol])
-        return datetime.utcnow() - last < timedelta(minutes=COOLDOWN_MINUTES)
-    return False
-
-def update_cooldown(symbol):
-    cd = load_cooldown()
-    cd[symbol] = datetime.utcnow().isoformat()
-    save_cooldown(cd)
 
 # ========================
 # FINANCE HELPERS
@@ -103,14 +70,13 @@ def get_technicals(symbol):
     if len(close) < 30:
         return None
 
-    rsi_val = RSIIndicator(close).rsi().iloc[-1]
-
+    rsi = RSIIndicator(close).rsi().iloc[-1]
     macd = MACD(close)
     macd_val = macd.macd().iloc[-1]
     signal_val = macd.macd_signal().iloc[-1]
 
     return {
-        "RSI": f"{rsi_val:.2f}",
+        "RSI": f"{rsi:.2f}",
         "MACD": f"{macd_val:.4f}",
         "Signal": f"{signal_val:.4f}",
     }
@@ -132,14 +98,10 @@ def plot_1m(symbol):
     return path
 
 # ========================
-# HANDLERS
+# COMMAND HANDLERS
 # ========================
 def handle_symbol(chat_id, symbol):
     symbol = symbol.upper()
-
-    if in_cooldown(symbol):
-        send_message(chat_id, f"⏳ {symbol} was queried recently. Try later.")
-        return
 
     fundamentals = get_fundamentals(symbol)
     technicals = get_technicals(symbol)
@@ -159,8 +121,6 @@ def handle_symbol(chat_id, symbol):
     if chart:
         send_photo(chat_id, chart)
 
-    update_cooldown(symbol)
-
 def handle_compare(chat_id, s1, s2):
     f1 = get_fundamentals(s1)
     f2 = get_fundamentals(s2)
@@ -171,4 +131,53 @@ def handle_compare(chat_id, s1, s2):
 
     send_message(chat_id, msg)
 
-# ====================
+# ========================
+# TELEGRAM WEBHOOK
+# ========================
+@app.route("/", methods=["POST"])
+def telegram_webhook():
+    data = request.json
+    message = data.get("message", {})
+    text = message.get("text", "")
+    chat_id = message.get("chat", {}).get("id")
+
+    if not chat_id or not text:
+        return "ok"
+
+    text = text.strip().upper()
+
+    if text == "/HELP":
+        send_message(
+            chat_id,
+            "Commands:\n"
+            "/price AAPL\n"
+            "/tech TSLA\n"
+            "/compare AAPL MSFT\n"
+            "or just send: AAPL"
+        )
+
+    elif text.startswith("/COMPARE"):
+        parts = text.split()
+        if len(parts) == 3:
+            handle_compare(chat_id, parts[1], parts[2])
+        else:
+            send_message(chat_id, "Usage: /compare AAPL MSFT")
+
+    elif text.startswith("/PRICE") or text.startswith("/TECH"):
+        parts = text.split()
+        if len(parts) == 2:
+            handle_symbol(chat_id, parts[1])
+        else:
+            send_message(chat_id, "Usage: /price AAPL")
+
+    else:
+        handle_symbol(chat_id, text)
+
+    return "ok"
+
+# ========================
+# START SERVER
+# ========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
