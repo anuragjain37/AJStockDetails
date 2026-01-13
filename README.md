@@ -1,0 +1,2 @@
+# AJStockDetails
+Details about stocks
