@@ -135,6 +135,14 @@ def handle_compare(chat_id, s1, s2):
 # TELEGRAM WEBHOOK
 # ========================
 @app.route("/", methods=["POST"])
+
+# ADD THIS
+@app.route("/", methods=["GET"])
+def health_check():
+    return "OK", 200
+
+# KEEP THIS
+@app.route("/", methods=["POST"])
 def telegram_webhook():
     data = request.json
     message = data.get("message", {})
