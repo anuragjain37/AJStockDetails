@@ -87,21 +87,31 @@ def get_fundamentals(symbol):
         ),
     }
 
+
 def get_technicals(symbol):
     df = yf.download(symbol, period="3mo", progress=False)
-    if df.empty:
+
+    if df.empty or "Close" not in df:
         return None
 
-    rsi = RSIIndicator(df["Close"]).rsi().iloc[-1]
-    macd = MACD(df["Close"])
+    close = df["Close"]
+
+    # Ensure 1D series (CRITICAL FIX)
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+
+    rsi_val = RSIIndicator(close).rsi().iloc[-1]
+
+    macd = MACD(close)
     macd_val = macd.macd().iloc[-1]
-    signal = macd.macd_signal().iloc[-1]
+    signal_val = macd.macd_signal().iloc[-1]
 
     return {
-        "RSI": f"{rsi:.2f}",
+        "RSI": f"{rsi_val:.2f}",
         "MACD": f"{macd_val:.4f}",
-        "Signal": f"{signal:.4f}",
+        "Signal": f"{signal_val:.4f}",
     }
+
 
 def plot_1m(symbol):
     df = yf.download(symbol, period="1mo", progress=False)
