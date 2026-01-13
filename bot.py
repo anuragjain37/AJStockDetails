@@ -8,8 +8,10 @@ from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 
+# ========================
+# CONFIG
+# ========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 OFFSET_FILE = "offset.txt"
@@ -17,20 +19,20 @@ COOLDOWN_FILE = "cooldown.json"
 COOLDOWN_MINUTES = 60
 
 # ========================
-# Telegram helpers
+# TELEGRAM HELPERS
 # ========================
-def send_message(text):
+def send_message(chat_id, text):
     requests.post(
         f"{API_URL}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text}
+        data={"chat_id": chat_id, "text": text}
     )
 
-def send_photo(path):
+def send_photo(chat_id, path):
     with open(path, "rb") as f:
         requests.post(
             f"{API_URL}/sendPhoto",
             files={"photo": f},
-            data={"chat_id": CHAT_ID}
+            data={"chat_id": chat_id}
         )
 
 def get_updates(offset=None):
@@ -40,7 +42,7 @@ def get_updates(offset=None):
     return requests.get(f"{API_URL}/getUpdates", params=params).json()
 
 # ========================
-# Cooldown logic
+# COOLDOWN LOGIC
 # ========================
 def load_cooldown():
     if os.path.exists(COOLDOWN_FILE):
@@ -65,7 +67,7 @@ def update_cooldown(symbol):
     save_cooldown(cd)
 
 # ========================
-# Finance helpers
+# FINANCE HELPERS
 # ========================
 def bn(x):
     return f"{x/1e9:.2f}" if isinstance(x, (int, float)) else "N/A"
@@ -87,7 +89,6 @@ def get_fundamentals(symbol):
         ),
     }
 
-
 def get_technicals(symbol):
     df = yf.download(symbol, period="3mo", progress=False)
 
@@ -95,10 +96,12 @@ def get_technicals(symbol):
         return None
 
     close = df["Close"]
-
-    # Ensure 1D series (CRITICAL FIX)
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
+
+    close = close.dropna()
+    if len(close) < 30:
+        return None
 
     rsi_val = RSIIndicator(close).rsi().iloc[-1]
 
@@ -112,7 +115,6 @@ def get_technicals(symbol):
         "Signal": f"{signal_val:.4f}",
     }
 
-
 def plot_1m(symbol):
     df = yf.download(symbol, period="1mo", progress=False)
     if df.empty:
@@ -122,6 +124,7 @@ def plot_1m(symbol):
     plt.plot(df.index, df["Close"])
     plt.title(f"{symbol} – Last 1 Month")
     plt.grid(True)
+
     path = f"{symbol}_1m.png"
     plt.tight_layout()
     plt.savefig(path)
@@ -129,11 +132,13 @@ def plot_1m(symbol):
     return path
 
 # ========================
-# Command handlers
+# HANDLERS
 # ========================
-def handle_symbol(symbol):
+def handle_symbol(chat_id, symbol):
+    symbol = symbol.upper()
+
     if in_cooldown(symbol):
-        send_message(f"⏳ {symbol} queried recently. Please wait.")
+        send_message(chat_id, f"⏳ {symbol} was queried recently. Try later.")
         return
 
     fundamentals = get_fundamentals(symbol)
@@ -148,65 +153,22 @@ def handle_symbol(symbol):
         for k, v in technicals.items():
             msg += f"{k}: {v}\n"
 
-    send_message(msg)
+    send_message(chat_id, msg)
 
     chart = plot_1m(symbol)
     if chart:
-        send_photo(chart)
+        send_photo(chat_id, chart)
 
     update_cooldown(symbol)
 
-def handle_compare(sym1, sym2):
-    f1 = get_fundamentals(sym1)
-    f2 = get_fundamentals(sym2)
+def handle_compare(chat_id, s1, s2):
+    f1 = get_fundamentals(s1)
+    f2 = get_fundamentals(s2)
 
-    msg = f"📊 COMPARE\n\n{sym1} vs {sym2}\n\n"
+    msg = f"📊 COMPARE\n\n{s1} vs {s2}\n\n"
     for k in f1:
         msg += f"{k}: {f1[k]} | {f2[k]}\n"
 
-    send_message(msg)
+    send_message(chat_id, msg)
 
-# ========================
-# Main loop
-# ========================
-def main():
-    offset = None
-    if os.path.exists(OFFSET_FILE):
-        offset = int(open(OFFSET_FILE).read().strip())
-
-    updates = get_updates(offset)
-
-    for update in updates.get("result", []):
-        offset = update["update_id"] + 1
-        msg = update.get("message", {}).get("text", "").strip()
-
-        if not msg:
-            continue
-
-        msg = msg.upper()
-
-        if msg == "/HELP":
-            send_message(
-                "/price AAPL\n"
-                "/tech AAPL\n"
-                "/compare AAPL MSFT\n"
-                "or just send: AAPL"
-            )
-
-        elif msg.startswith("/PRICE") or msg.startswith("/TECH"):
-            symbol = msg.split()[-1]
-            handle_symbol(symbol)
-
-        elif msg.startswith("/COMPARE"):
-            _, s1, s2 = msg.split()
-            handle_compare(s1, s2)
-
-        else:
-            handle_symbol(msg)
-
-    if offset:
-        with open(OFFSET_FILE, "w") as f:
-            f.write(str(offset))
-
-if __name__ == "__main__":
-    main()
+# ====================
